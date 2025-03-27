@@ -65,6 +65,14 @@ spec:
     tests:
     - testName: '[sig-arch][OCPFeatureGate:Example] should only run FeatureGated test
         when enabled'
+  - featureGate: GatewayAPIController
+    tests:
+    - testName: '[sig-network][OCPFeatureGate:GatewayAPIController][Feature:Router][apigroup:gateway.networking.k8s.io]
+        Verify Gateway API controller resources are created and ensure OSSM operator
+        is installed after creating gatewayclass'
+    - testName: '[sig-network][OCPFeatureGate:GatewayAPIController][Feature:Router][apigroup:gateway.networking.k8s.io]
+        Verify Gateway API controller resources are created and ensure OSSM related
+        resources are created'
   - featureGate: HardwareSpeed
     tests:
     - testName: '[sig-etcd][OCPFeatureGate:HardwareSpeed][Serial] etcd is able to

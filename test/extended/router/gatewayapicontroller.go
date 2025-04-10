@@ -49,6 +49,21 @@ var _ = g.Describe("[sig-network-edge][OCPFeatureGate:GatewayAPIController][Feat
 		deploymentOSSMName = "servicemesh-operator3"
 	)
 	g.BeforeAll(func() {
+		infra, err := oc.AdminConfigClient().ConfigV1().Infrastructures().Get(context.Background(), "cluster", metav1.GetOptions{})
+		o.Expect(err).NotTo(o.HaveOccurred())
+		o.Expect(infra).NotTo(o.BeNil())
+
+		platformType := infra.Status.Platform
+		if infra.Status.PlatformStatus != nil {
+			platformType = infra.Status.PlatformStatus.Type
+		}
+		switch platformType {
+		case configv1.AWSPlatformType, configv1.AzurePlatformType, configv1.GCPPlatformType, configv1.IBMCloudPlatformType:
+			// supported
+		default:
+			g.Skip(fmt.Sprintf("Skipping on non cloud platform type %q", platformType))
+		}
+		
 		gwapiClient := gatewayapiclientset.NewForConfigOrDie(oc.AdminConfig())
 		// create the default gatewayClass
 		gatewayClass := buildGatewayClass(gatewayClassName, gatewayClassControllerName)

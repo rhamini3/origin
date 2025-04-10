@@ -134,10 +134,12 @@ var _ = g.Describe("[sig-network-edge][OCPFeatureGate:GatewayAPIController][Feat
 		waitErr := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 2*time.Minute, false, func(context context.Context) (bool, error) {
 			deployOSSM, err := oc.AdminKubeClient().AppsV1().Deployments(expectedSubscriptionNamespace).Get(context, "servicemesh-operator3", metav1.GetOptions{})
 			if err != nil {
-				if deployOSSM.Status.ReadyReplicas < 1 {
-					e2e.Logf("OSSM operator deployment %q is not ready, retrying...", deploymentOSSMName)
-					return false, nil
-				}
+				e2e.Logf("Failed to get OSSM operator deployment %q, retrying...", deploymentOSSMName)
+				return false, nil
+			}
+			if deployOSSM.Status.ReadyReplicas < 1 {
+				e2e.Logf("OSSM operator deployment %q is not ready, retrying...", deploymentOSSMName)
+				return false, nil
 			}
 			e2e.Logf("OSSM operator deployment %q is ready", deploymentOSSMName)
 			return true, nil
@@ -159,18 +161,13 @@ var _ = g.Describe("[sig-network-edge][OCPFeatureGate:GatewayAPIController][Feat
 		gwapiClient := gatewayapiclientset.NewForConfigOrDie(oc.AdminConfig())
 		customGatewayClassName := "custom-gatewayclass"
 
-		g.By("Ensure default GatewayClass is accepted and Istio is healthy")
-		errCheck := checkGatewayClass(oc, gatewayClassName)
-		o.Expect(errCheck).NotTo(o.HaveOccurred(), "GatewayClass %q was not installed and accepted", gatewayClassName)
-		waitForIstioHealthy(oc)
-
 		g.By("Create Custom GatewayClass")
 		gatewayClass := buildGatewayClass(customGatewayClassName, gatewayClassControllerName)
 		gwc, err := gwapiClient.GatewayV1().GatewayClasses().Create(context.TODO(), gatewayClass, metav1.CreateOptions{})
 		if err != nil {
 			e2e.Logf("Gateway Class \"custom-gatewayclass\" already exists, or has failed to be created, checking its status")
 		}
-		errCheck = checkGatewayClass(oc, customGatewayClassName)
+		errCheck := checkGatewayClass(oc, customGatewayClassName)
 		o.Expect(errCheck).NotTo(o.HaveOccurred(), "GatewayClass %q was not installed and accepted", gwc.Name)
 
 		g.By("Deleting Custom GatewayClass and confirming that it is no longer there")
@@ -185,11 +182,7 @@ var _ = g.Describe("[sig-network-edge][OCPFeatureGate:GatewayAPIController][Feat
 		o.Expect(defaultCheck).NotTo(o.HaveOccurred())
 
 		g.By("Confirm that ISTIO CR is created and in healthy state")
-		resource := types.NamespacedName{Namespace: "openshift-ingress", Name: "openshift-gateway"}
-
-		istioStatus, errIstio := oc.AsAdmin().Run("get").Args("-n", resource.Namespace, "istio", resource.Name, "-o=jsonpath={.status.state}").Output()
-		o.Expect(errIstio).NotTo(o.HaveOccurred())
-		o.Expect(istioStatus).To(o.Equal(`Healthy`))
+		waitForIstioHealthy(oc)
 	})
 
 	g.It("Ensure LB, service, and dnsRecord are created for a Gateway object", func() {

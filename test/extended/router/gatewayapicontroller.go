@@ -129,18 +129,7 @@ var _ = g.Describe("[sig-network-edge][OCPFeatureGate:GatewayAPIController][Feat
 		o.Expect(waitErr).NotTo(o.HaveOccurred(), "OSSM Operator deployment %q did not successfully deploy its pod", deploymentOSSMName)
 
 		g.By("Confirm that Istio CR is created and in healthy state")
-		resource := types.NamespacedName{Namespace: "openshift-ingress", Name: "openshift-gateway"}
-		waitCR := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 2*time.Minute, false, func(context context.Context) (bool, error) {
-			istioStatus, errIstio := oc.AsAdmin().Run("get").Args("-n", resource.Namespace, "istio", resource.Name, "-o=jsonpath={.status.state}").Output()
-			o.Expect(errIstio).NotTo(o.HaveOccurred())
-			if istioStatus != "Healthy" {
-				e2e.Logf("Istio CR %q is not healthy, retrying...", resource.Name)
-				return false, nil
-			}
-			e2e.Logf("Istio CR %q is healthy", resource.Name)
-			return true, nil
-		})
-		o.Expect(waitCR).NotTo(o.HaveOccurred(), "Istio CR %q did not reach healthy state in time", resource.Name)
+		waitForIstioHealthy(oc)
 
 	})
 	g.It("Ensure default gatewayclass is accepted", func() {
@@ -152,21 +141,27 @@ var _ = g.Describe("[sig-network-edge][OCPFeatureGate:GatewayAPIController][Feat
 	})
 	g.It("Ensure custom gatewayclass can be accepted", func() {
 		gwapiClient := gatewayapiclientset.NewForConfigOrDie(oc.AdminConfig())
+		customGatewayClassName := "custom-gatewayclass"
+
+		g.By("Ensure default GatewayClass is accepted and Istio is healthy")
+		errCheck := checkGatewayClass(oc, gatewayClassName)
+		o.Expect(errCheck).NotTo(o.HaveOccurred(), "GatewayClass %q was not installed and accepted", gatewayClassName)
+		waitForIstioHealthy(oc)
 
 		g.By("Create Custom GatewayClass")
-		gatewayClass := buildGatewayClass("custom-gatewayclass", gatewayClassControllerName)
+		gatewayClass := buildGatewayClass(customGatewayClassName, gatewayClassControllerName)
 		gwc, err := gwapiClient.GatewayV1().GatewayClasses().Create(context.TODO(), gatewayClass, metav1.CreateOptions{})
 		if err != nil {
 			e2e.Logf("Gateway Class \"custom-gatewayclass\" already exists, or has failed to be created, checking its status")
 		}
-		errCheck := checkGatewayClass(oc, "custom-gatewayclass")
+		errCheck = checkGatewayClass(oc, customGatewayClassName)
 		o.Expect(errCheck).NotTo(o.HaveOccurred(), "GatewayClass %q was not installed and accepted", gwc.Name)
 
 		g.By("Deleting Custom GatewayClass and confirming that it is no longer there")
-		err = gwapiClient.GatewayV1().GatewayClasses().Delete(context.Background(), "custom-gatewayclass", metav1.DeleteOptions{})
+		err = gwapiClient.GatewayV1().GatewayClasses().Delete(context.Background(), customGatewayClassName, metav1.DeleteOptions{})
 		o.Expect(err).NotTo(o.HaveOccurred())
 
-		_, err = gwapiClient.GatewayV1().GatewayClasses().Get(context.Background(), "custom-gatewayclass", metav1.GetOptions{})
+		_, err = gwapiClient.GatewayV1().GatewayClasses().Get(context.Background(), customGatewayClassName, metav1.GetOptions{})
 		o.Expect(err).To(o.HaveOccurred(), "The custom gatewayClass \"custom-gatewayclass\" has been sucessfully deleted")
 
 		g.By("check if default gatewayClass is accepted and ISTIO CR and pod are still available")
@@ -182,60 +177,90 @@ var _ = g.Describe("[sig-network-edge][OCPFeatureGate:GatewayAPIController][Feat
 	})
 
 	g.It("Ensure LB, service, and dnsRecord are created for a Gateway object", func() {
+		var lbAddress string
+		g.By("Ensure default GatewayClass is accepted")
+		errCheck := checkGatewayClass(oc, gatewayClassName)
+		o.Expect(errCheck).NotTo(o.HaveOccurred(), "GatewayClass %q was not installed and accepted", gatewayClassName)
+
 		g.By("Getting the default domain")
 		defaultIngressDomain, err := getDefaultIngressClusterDomainName(oc, time.Minute)
 		o.Expect(err).NotTo(o.HaveOccurred(), "failed to find default domain name")
-		defaultDomain := strings.Split(defaultIngressDomain, "apps.")[1]
+		defaultDomain := strings.Replace(defaultIngressDomain, "apps.", "gw-default.", 1)
 
-		g.By("Create the default API Gateway")
+		g.By("Create the default Gateway")
 		gw := names.SimpleNameGenerator.GenerateName("gateway-")
 		gateways = append(gateways, gw)
 		_, gwerr := createAndCheckGateway(oc, gw, gatewayClassName, defaultDomain)
 		o.Expect(gwerr).NotTo(o.HaveOccurred(), "failed to create Gateway")
 
 		g.By("Verify the gateway's LoadBalancer service and DNSRecords")
-		// check LB service
-		lbExternalIP, lberr := oc.AdminKubeClient().CoreV1().Services("openshift-ingress").Get(context.Background(), gw+"-openshift-default", metav1.GetOptions{})
-		e2e.Logf("The load balancer external IP is: %v", lbExternalIP.Status.LoadBalancer.Ingress[0].Hostname)
-		o.Expect(lberr).NotTo(o.HaveOccurred())
+		// check gateway LB service, note that External-IP might be hostname (AWS) or IP (Azure/GCP)
+		lbService, err := oc.AdminKubeClient().CoreV1().Services("openshift-ingress").Get(context.Background(), gw+"-openshift-default", metav1.GetOptions{})
+		o.Expect(err).NotTo(o.HaveOccurred())
+		if lbService.Status.LoadBalancer.Ingress[0].Hostname != "" {
+			lbAddress = lbService.Status.LoadBalancer.Ingress[0].Hostname
+		} else {
+			lbAddress = lbService.Status.LoadBalancer.Ingress[0].IP
+		}
+		e2e.Logf("The load balancer External-IP is: %v", lbAddress)
 
 		gwapiClient := gatewayapiclientset.NewForConfigOrDie(oc.AdminConfig())
 		gwlist, haerr := gwapiClient.GatewayV1().Gateways("openshift-ingress").Get(context.Background(), gw, metav1.GetOptions{})
 		e2e.Logf("The gateway hostname address is %v ", gwlist.Status.Addresses[0].Value)
 		o.Expect(haerr).NotTo(o.HaveOccurred())
-		o.Expect(lbExternalIP.Status.LoadBalancer.Ingress[0].Hostname).To(o.Equal(gwlist.Status.Addresses[0].Value))
+		o.Expect(lbAddress).To(o.Equal(gwlist.Status.Addresses[0].Value))
 
 		// get the dnsrecord name
 		dnsRecordName, err := oc.AsAdmin().WithoutNamespace().Run("get").Args("-n", "openshift-ingress", "dnsrecord", "-l", "gateway.networking.k8s.io/gateway-name="+gw, "-o=jsonpath={.items[0].metadata.name}").Output()
 		o.Expect(err).NotTo(o.HaveOccurred())
 		e2e.Logf("The gateway API dnsrecord name is: %v", dnsRecordName)
-		// check whether status of published dns record of the gateway is True
-		dnsRecordstatus, err := oc.AsAdmin().WithoutNamespace().Run("get").Args("-n", "openshift-ingress", "dnsrecord", dnsRecordName, `-o=jsonpath={.status.zones[0].conditions[0].status}`).Output()
+		// check status of published dnsrecord of the gateway, all zones should be True (not contains False)
+		dnsRecordStatus, err := oc.AsAdmin().WithoutNamespace().Run("get").Args("-n", "openshift-ingress", "dnsrecord", dnsRecordName, `-o=jsonpath={.status.zones[*].conditions[0].status}`).Output()
 		o.Expect(err).NotTo(o.HaveOccurred())
-		o.Expect(dnsRecordstatus).To(o.Equal("True"))
+		e2e.Logf("The dnsrecords status of all zones: %v", dnsRecordStatus)
+		o.Expect(dnsRecordStatus).NotTo(o.ContainSubstring("False"))
 	})
 
 	g.It("Ensure HTTPRoute object is created", func() {
+		g.By("Ensure default GatewayClass is accepted")
+		errCheck := checkGatewayClass(oc, gatewayClassName)
+		o.Expect(errCheck).NotTo(o.HaveOccurred(), "GatewayClass %q was not installed and accepted", gatewayClassName)
+
 		g.By("Getting the default domain")
 		defaultIngressDomain, err := getDefaultIngressClusterDomainName(oc, time.Minute)
 		o.Expect(err).NotTo(o.HaveOccurred(), "failed to find default domain name")
-		defaultDomain := strings.Split(defaultIngressDomain, "apps.")[1]
+		customDomain := strings.Replace(defaultIngressDomain, "apps.", "gw-custom.", 1)
 
 		g.By("Create a custom Gateway for the HTTPRoute")
 		gw := names.SimpleNameGenerator.GenerateName("gateway-")
 		gateways = append(gateways, gw)
-		_, gwerr := createAndCheckGateway(oc, gw, gatewayClassName, defaultDomain)
+		_, gwerr := createAndCheckGateway(oc, gw, gatewayClassName, customDomain)
 		o.Expect(gwerr).NotTo(o.HaveOccurred(), "failed to create Gateway")
 
 		g.By("Create the http route using the custom gateway")
 		httproutes = append(httproutes, "test-httproute")
-		defaultRoutename := "test-hostname.gwapi." + defaultDomain
+		defaultRoutename := "test-hostname.gwapi." + customDomain
 		createHttpRoute(oc, gw, "test-httproute", defaultRoutename, "echo-pod-"+gw)
 
 		g.By("Checking the http route using the default gateway is accepted")
 		assertHttpRouteSuccessful(oc, gw, "test-httproute")
 	})
 })
+
+func waitForIstioHealthy(oc *exutil.CLI) {
+	resource := types.NamespacedName{Namespace: "openshift-ingress", Name: "openshift-gateway"}
+	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 2*time.Minute, false, func(context context.Context) (bool, error) {
+		istioStatus, errIstio := oc.AsAdmin().Run("get").Args("-n", resource.Namespace, "istio", resource.Name, "-o=jsonpath={.status.state}").Output()
+		o.Expect(errIstio).NotTo(o.HaveOccurred())
+		if istioStatus != "Healthy" {
+			e2e.Logf("Istio CR %q is not healthy, retrying...", resource.Name)
+			return false, nil
+		}
+		e2e.Logf("Istio CR %q is healthy", resource.Name)
+		return true, nil
+	})
+	o.Expect(err).NotTo(o.HaveOccurred(), "Istio CR %q did not reach healthy state in time", resource.Name)
+}
 
 func checkGatewayClass(oc *exutil.CLI, name string) error {
 	gwapiClient := gatewayapiclientset.NewForConfigOrDie(oc.AdminConfig())

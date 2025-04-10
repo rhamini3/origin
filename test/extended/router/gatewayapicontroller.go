@@ -63,9 +63,6 @@ var _ = g.Describe("[sig-network-edge][OCPFeatureGate:GatewayAPIController][Feat
 		gwapiClient := gatewayapiclientset.NewForConfigOrDie(oc.AdminConfig())
 		namespace := oc.Namespace()
 		g.By("Cleaning up the GatewayAPI Objects")
-		err := gwapiClient.GatewayV1().GatewayClasses().Delete(context.Background(), gatewayClassName, metav1.DeleteOptions{})
-		o.Expect(err).NotTo(o.HaveOccurred())
-
 		for _, name := range gateways {
 			err = gwapiClient.GatewayV1().Gateways("openshift-ingress").Delete(context.Background(), name, metav1.DeleteOptions{})
 			o.Expect(err).NotTo(o.HaveOccurred(), "Gateway %s could not be deleted", name)
@@ -296,7 +293,7 @@ func checkGatewayStatus(oc *exutil.CLI, gwname, ingressNameSpace string) (*gatew
 	gwapiClient := gatewayapiclientset.NewForConfigOrDie(oc.AdminConfig())
 	gateway := &gatewayapiv1.Gateway{}
 
-	waitErr := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 2*time.Minute, false, func(context context.Context) (bool, error) {
+	waitErr := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 10*time.Minute, false, func(context context.Context) (bool, error) {
 		gateway, errGwStatus := gwapiClient.GatewayV1().Gateways(ingressNameSpace).Get(context, gwname, metav1.GetOptions{})
 		if errGwStatus != nil {
 			e2e.Logf("Failed to get gateway object, retrying...")

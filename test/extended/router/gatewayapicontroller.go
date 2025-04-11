@@ -27,7 +27,7 @@ import (
 )
 
 // adding serial annotation due to known issue: https://issues.redhat.com/browse/OCPBUGS-54884 will be fixed in next release
-var _ = g.Describe("[sig-network-edge][OCPFeatureGate:GatewayAPIController][Feature:Router][serial][apigroup:gateway.networking.k8s.io]", g.Ordered, g.Serial, func() {
+var _ = g.Describe("[sig-network-edge][OCPFeatureGate:GatewayAPIController][Feature:Router][Serial][apigroup:gateway.networking.k8s.io]", g.Ordered, g.Serial, func() {
 	defer g.GinkgoRecover()
 	var (
 		oc         = exutil.NewCLIWithPodSecurityLevel("gatewayapi-controller", admissionapi.LevelBaseline)
